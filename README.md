@@ -1,7 +1,5 @@
 Simple tool to download all the soundtrack from a YouTube playlist.
 
-./code/extractor_v2.py -l LLOxDUzFJlm93QEsjA69jE7g -d /var/www/youtube-playlist-downloader/music
-
 Installation:
 - Download this repository
 - Install youtube-dl (http://rg3.github.io/youtube-dl/)

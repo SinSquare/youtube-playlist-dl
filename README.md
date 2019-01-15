@@ -2,7 +2,7 @@ Simple tool to download all the soundtrack from a YouTube playlist.
 
 Installation:
 - Download this repository
-- Install youtube-dl (http://rg3.github.io/youtube-dl/)
+- Install youtube-dl (http://rg3.github.io/youtube-dl/) (from time to time you should update it by youtube-dl -U)
 
 Usage:
 ```

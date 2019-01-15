@@ -209,7 +209,8 @@ class YoutubeUrlDownloader:
     def downloadUrl(self):
         tmp = tempfile.gettempdir() + "/ytdownloader"
         #path = '.'.join(self.filePath.split('.')[:-1])
-        cmd = self.ytdl + " -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' --extract-audio --audio-format mp3 --output \"" + tmp + ".%(ext)s\" " + self.url
+        cmd = self.ytdl + " -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' --limit-rate 10M '\
+        '--extract-audio --audio-format mp3 --output \"" + tmp + ".%(ext)s\" " + self.url
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
         (out, err) = proc.communicate()
         os.system("cp %s %s" % (tmp + ".mp3", self.filePath))

@@ -62,11 +62,20 @@ class Database:
         except sqlite3.Error as e:
             self.fatalError(str(e), e)
 
-    #get data from the url
+    #get data by url
     def getUrlData(self, url):
         try:
             c = self.connection.cursor()
             c.execute("SELECT * FROM video_data WHERE youtube_id=?", (url, ))
+            return c.fetchone()
+        except sqlite3.Error as e:
+            print(e)
+
+    #get data by hash
+    def getHashData(self, hash):
+        try:
+            c = self.connection.cursor()
+            c.execute("SELECT * FROM video_data WHERE file_hash=?", (hash, ))
             return c.fetchone()
         except sqlite3.Error as e:
             print(e)
@@ -213,7 +222,7 @@ class YoutubeUrlDownloader:
     def downloadUrl(self):
         tmp = tempfile.gettempdir() + "/ytdownloader"
         #path = '.'.join(self.filePath.split('.')[:-1])
-        cmd = self.ytdl + " -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' --limit-rate 10M --extract-audio --audio-format mp3 --output \"" + tmp + ".%(ext)s\" " + self.url
+        cmd = self.ytdl + " --no-cache-dir -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' --limit-rate 10M --extract-audio --audio-format mp3 --output \"" + tmp + ".%(ext)s\" " + self.url
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
         (out, err) = proc.communicate()
         os.system("cp %s %s" % (tmp + ".mp3", self.filePath))
@@ -298,6 +307,9 @@ class FileReader:
     def fileWithHash(self, fileHash):
         return self.hashList.get(fileHash)
 
+    def getList(self):
+        return self.hashList
+
     def printList(self):
         print(self.hashList)
 
@@ -317,6 +329,11 @@ def main(listUrl, outDir, ytdl):
         database = Database(outPath + '/database.db')
 
     fileReader = FileReader(outPath)
+    for hash, file in fileReader.getList().items():
+        dbData = database.getHashData(hash)
+        if dbData == None:
+            print('Unknown file, deleting')
+            os.remove(file)
 
     def exitHandler():
         print("exit rename")

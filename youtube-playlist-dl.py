@@ -1,45 +1,56 @@
 #!/usr/bin/env python3
 
-import sys
 from argparse import ArgumentParser
-import tempfile
-import os
-import subprocess
-import json
-import re
-import time
 import atexit
-import sqlite3
 import fnmatch
+import hashlib
+import json
+import os
+import random
+import re
+import sqlite3
+import string
+import subprocess
+import sys
+import tempfile
+import time
 
 
+#database handling
 class Database:
+    #open the database
+    #attach exit handler
     def __init__(self, dbFile):
-        try:
-            self.connection = sqlite3.connect(dbFile)
-            self.connection.row_factory = sqlite3.Row
-            print(sqlite3.version)
-        except sqlite3.Error as e:
-            self.fatalError(str(e), e)
-
-        self.initiateDatabse()
-
         def exitHandler():
             print("exit db")
             if self.connection:
                 self.connection.close()
 
         atexit.register(exitHandler)
+        try:
+            self.connection = sqlite3.connect(dbFile)
+            self.connection.row_factory = sqlite3.Row
+            self.connection.isolation_level = "IMMEDIATE"
+            print(sqlite3.version)
+        except sqlite3.Error as e:
+            self.fatalError(str(e), e)
 
+        self.initiateDatabse()
+
+    #close the database
     def close(self):
         if self.connection:
             self.connection.close()
+        self.connection = None
 
+    #initialize the database table
+    #does not support table update
     def initiateDatabse(self):
         tableSql = """CREATE TABLE IF NOT EXISTS video_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
             youtube_id TEXT NOT NULL,
             file_name TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
             position INTEGER NOT NULL,
             insert_date INTEGER NOT NULL,
             CONSTRAINT unique_youtube_id UNIQUE (youtube_id)
@@ -51,6 +62,7 @@ class Database:
         except sqlite3.Error as e:
             self.fatalError(str(e), e)
 
+    #get data from the url
     def getUrlData(self, url):
         try:
             c = self.connection.cursor()
@@ -59,95 +71,87 @@ class Database:
         except sqlite3.Error as e:
             print(e)
 
+    #get position data - ordered filehash list
     def getPositionData(self):
         try:
             c = self.connection.cursor()
-            c.execute("SELECT file_name FROM video_data ORDER BY position ASC")
+            c.execute(
+                "SELECT file_name, file_hash FROM video_data ORDER BY position ASC"
+            )
             return c.fetchall()
         except sqlite3.Error as e:
             print(e)
 
-    def saveUrlData(self, url, fileName, position):
+    #update position for url
+    def updateUrlPosition(self, url, position):
+        data = self.getUrlData(url)
+        if data['id'] != None:
+            sql = 'UPDATE video_data SET position = position + 1 WHERE position >= ? AND id <> ?'
+            try:
+                c = self.connection.cursor()
+                c.execute(sql, (position, data['id']))
+                self.connection.commit()
+            except sqlite3.Error as e:
+                print(e)
+            sql = 'UPDATE video_data SET position = ? WHERE id = ?'
+            try:
+                c = self.connection.cursor()
+                c.execute(sql, (position, data['id']))
+                self.connection.commit()
+            except sqlite3.Error as e:
+                print(e)
+
+    #save data for url
+    def saveUrlData(self, url, fileName, position, fileHash):
         if not self.connection:
             self.fatalError("No connection")
 
         data = self.getUrlData(url)
         _id = None
         if data != None:
-            sql = 'UPDATE video_data SET file_name = ?, position = ?, insert_date = ? WHERE id = ?'
+            sql = 'UPDATE video_data SET file_name = ?, file_hash = ?, position = ?, insert_date = ? WHERE id = ?'
             try:
                 c = self.connection.cursor()
-                c.execute(sql,
-                          (fileName, position, int(time.time()), data['id']))
+                c.execute(sql, (fileName, fileHash, position, int(time.time()),
+                                data['id']))
                 self.connection.commit()
                 _id = data['id']
             except sqlite3.Error as e:
-                print(e)
-            except:
-                print("Unexpected error:", sys.exc_info()[0])
+                print("#1", e)
         else:
-            sql = 'INSERT INTO video_data (youtube_id, file_name, position, insert_date) VALUES (?, ?, ?, ?)'
+            sql = 'INSERT INTO video_data (youtube_id, file_name, file_hash, position, insert_date) VALUES (?, ?, ?, ?, ?)'
             try:
                 c = self.connection.cursor()
-                c.execute(sql, (url, fileName, position, int(time.time())))
+                c.execute(
+                    sql, (url, fileName, fileHash, position, int(time.time())))
                 self.connection.commit()
                 _id = c.lastrowid
             except sqlite3.Error as e:
-                print(e)
+                print("#2", e)
             except:
                 print("Unexpected error:", sys.exc_info()[0])
 
         # update position info
-        sql = 'UPDATE video_data SET position = position + 1 WHERE position >= ? AND id <> ?'
-        try:
-            c = self.connection.cursor()
-            c.execute(sql, (position, _id))
-            self.connection.commit()
-        except sqlite3.Error as e:
-            print(e)
-        except:
-            print("Unexpected error:", sys.exc_info()[0])
+        self.updateUrlPosition(url, position)
 
+    # print fatal error
     def fatalError(self, message, previous=None):
+        print("SQlite error:", message, previous.__class__.__name__)
         raise Exception(message)
 
 
+#download a single url and tag the file
 class YoutubeUrlDownloader:
-    def __init__(self, youtubeDlPath, database, outPath, url, position):
+    def __init__(self, youtubeDlPath, url, filePath):
         print('Downloading ', url, '...')
         self.ytdl = youtubeDlPath
-        self.db = database
-        self.outPath = outPath
+        self.filePath = filePath
         self.url = url
-        self.position = position
-        ###
-        dbData = self.db.getUrlData(url)
-        self.fileName = None
-        self.filePath = None
-        if dbData != None and "file_name" in dbData.keys():
-            fName = dbData["file_name"]
-            for file in os.listdir(outPath):
-                if fnmatch.fnmatch(file, '*' + fName):
-                    result = re.match(r'([0-9]{3}\-){1,}(?P<filename>.*)',
-                                      file)
 
-                    if result:
-                        self.fileName = result.group('filename')
-                    else:
-                        self.fileName = file
-                    print('Found file')
-                    break
+        self.details = self.getUrlDetails()
 
-        if self.fileName == None:
-            print("Not found")
-            self.details = self.getUrlDetails()
-            self.fileName = self.getFileName()
-            self.filePath = self.outPath + "/" + self.fileName
-
-            self.downloadUrl()
-            self.tagFile()
-
-        self.db.saveUrlData(self.url, self.fileName, self.position)
+        self.downloadUrl()
+        self.tagFile()
 
     def getUrlDetails(self):
         ret = {
@@ -201,7 +205,7 @@ class YoutubeUrlDownloader:
             cmd = cmd + " --song=\"" + self.details["track"] + "\""
         cmd = cmd.strip()
         if cmd:
-            print(cmd)
+            print(cmd, self.filePath)
             cmd = "id3tag " + cmd + " " + self.filePath
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
             (out, err) = proc.communicate()
@@ -209,8 +213,7 @@ class YoutubeUrlDownloader:
     def downloadUrl(self):
         tmp = tempfile.gettempdir() + "/ytdownloader"
         #path = '.'.join(self.filePath.split('.')[:-1])
-        cmd = self.ytdl + " -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' --limit-rate 10M '\
-        '--extract-audio --audio-format mp3 --output \"" + tmp + ".%(ext)s\" " + self.url
+        cmd = self.ytdl + " -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' --limit-rate 10M --extract-audio --audio-format mp3 --output \"" + tmp + ".%(ext)s\" " + self.url
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
         (out, err) = proc.communicate()
         os.system("cp %s %s" % (tmp + ".mp3", self.filePath))
@@ -239,14 +242,64 @@ class YoutubePlaylist:
 
 class RenameFiles:
     def __init__(self, database, outPath):
+        fileReader = FileReader(outPath)
         cnt = 1
         for row in database.getPositionData():
-            originalName = row["file_name"]
-            newname = "%03d-%s" % (cnt, originalName)
+            fileName = row["file_name"]
+            fileHash = row["file_hash"]
+            newName = "%03d-%s" % (cnt, fileName)
+            path = fileReader.fileWithHash(fileHash)
+
+            print(fileName, fileHash, newName, path)
+            if path == None:
+                print('Could not find file with hash...')
+            else:
+                os.rename(path, outPath + "/" + newName)
             cnt = cnt + 1
-            for file in os.listdir(outPath):
-                if fnmatch.fnmatch(file, '*' + originalName):
-                    os.rename(outPath + "/" + file, outPath + "/" + newname)
+
+        # save the database backup
+        database.close()
+        os.system("cp %s %s" % (outPath + "/database.db",
+                                outPath + "/database.backup"))
+
+
+class FileReader:
+    def __init__(self, outPath):
+        self.hashList = {}
+        musicExtensions = [
+            "*.3gp", "*.aa", "*.aac", "*.aax", "*.act", "*.aiff", "*.amr",
+            "*.ape", "*.au", "*.awb", "*.dct", "*.dss", "*.dvf", "*.flac",
+            "*.gsm", "*.iklax", "*.ivs", "*.m4a", "*.m4b", "*.m4p", "*.mmf",
+            "*.mp3", "*.mpc", "*.msv", "*.nmf", "*.nsf", "*.ogg", "*.oga",
+            "*.mogg", "*.opus", "*.ra", "*.rm", "*.raw", "*.sln", "*.tta",
+            "*.vox", "*.wav", "*.wma", "*.wv", "*.webm", "*.8svx"
+        ]
+        for file in os.listdir(outPath):
+            for extension in musicExtensions:
+                if fnmatch.fnmatch(file, extension):
+                    fileHash = self.fileHash(outPath + "/" + file)
+                    if self.hashList.get(fileHash) != None:
+                        # duplicated file
+                        print("Duplicated file, deleting", file)
+                        os.remove(outPath + "/" + file)
+
+                    self.hashList[fileHash] = outPath + "/" + file
+
+    def fileHash(self, path):
+        BLOCKSIZE = 65536
+        hasher = hashlib.sha1()
+        with open(path, 'rb') as afile:
+            buf = afile.read(BLOCKSIZE)
+            while len(buf) > 0:
+                hasher.update(buf)
+                buf = afile.read(BLOCKSIZE)
+        return hasher.hexdigest()
+
+    def fileWithHash(self, fileHash):
+        return self.hashList.get(fileHash)
+
+    def printList(self):
+        print(self.hashList)
 
 
 def main(listUrl, outDir, ytdl):
@@ -255,24 +308,44 @@ def main(listUrl, outDir, ytdl):
         raise ValueError(
             "destination does not exists, not a directory or not readeable")
 
-    database = Database(outPath + '/database.db')
+    try:
+        database = Database(outPath + '/database.db')
+    except:
+        print("Could not open database, try restoring the backup...")
+        os.system("cp %s %s" % (outPath + "/database.backup",
+                                outPath + "/database.db"))
+        database = Database(outPath + '/database.db')
+
+    fileReader = FileReader(outPath)
 
     def exitHandler():
         print("exit rename")
         RenameFiles(database, outPath)
 
     atexit.register(exitHandler)
-
     urls = YoutubePlaylist(ytdl, listUrl).getUrls()
 
-    cnt = 0
-    for url in urls:
-        yt = YoutubeUrlDownloader(ytdl, database, outPath, url, cnt)
-        cnt = cnt + 1
-        if cnt % 50 == 0:
-            RenameFiles(database, outPath)
+    for cnt, url in enumerate(urls):
+        print(cnt, url)
+        dbData = database.getUrlData(url)
+        if dbData != None and "file_hash" in dbData.keys():
+            fileHash = dbData["file_hash"]
+            if fileReader.fileWithHash(fileHash) != None:
+                print('File already downloaded', url)
+                database.updateUrlPosition(url, cnt)
+                continue
+        filePath = outPath + "/" + ''.join(
+            random.choices(string.ascii_uppercase + string.digits,
+                           k=15)) + ".mp3"
 
-    RenameFiles(database, outPath)
+        yt = YoutubeUrlDownloader(ytdl, url, filePath)
+
+        fileName = yt.getFileName()
+        fileHash = fileReader.fileHash(filePath)
+
+        database.saveUrlData(url, fileName, cnt, fileHash)
+
+    RenameFiles(database, fileReader, outPath)
 
 
 if __name__ == "__main__":
@@ -288,4 +361,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    main(args.list, args.destination, args.ytdl)
+    try:
+        main(args.list, args.destination, args.ytdl)
+    except (KeyboardInterrupt, SystemExit):
+        print("exit")
+    except:
+        print("Unexpected error:", sys.exc_info()[0])

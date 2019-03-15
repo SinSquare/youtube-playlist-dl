@@ -220,12 +220,14 @@ class YoutubeUrlDownloader:
             (out, err) = proc.communicate()
 
     def downloadUrl(self):
-        tmp = tempfile.gettempdir() + "/ytdownloader"
+        tmp = tempfile.gettempdir() + "/" + ''.join(
+            random.choices(string.ascii_uppercase + string.digits, k=15))
         #path = '.'.join(self.filePath.split('.')[:-1])
         cmd = self.ytdl + " --no-cache-dir -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' --limit-rate 10M --extract-audio --audio-format mp3 --output \"" + tmp + ".%(ext)s\" " + self.url
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
         (out, err) = proc.communicate()
         os.system("cp %s %s" % (tmp + ".mp3", self.filePath))
+        os.remove(tmp + ".mp3")
 
 
 class YoutubePlaylist:
@@ -258,8 +260,6 @@ class RenameFiles:
             fileHash = row["file_hash"]
             newName = "%03d-%s" % (cnt, fileName)
             path = fileReader.fileWithHash(fileHash)
-
-            print(fileName, fileHash, newName, path)
             if path == None:
                 print('Could not find file with hash...')
             else:
